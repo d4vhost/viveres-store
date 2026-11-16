@@ -61,7 +61,19 @@ permiten leer/escribir las colecciones `products` y `sales`.
 `dist/` es un sitio estático: sirve en cualquier hosting con HTTPS. Como es una
 SPA, el hosting debe devolver `index.html` para cualquier ruta.
 
-Con Firebase Hosting ya está configurado en `firebase.json`:
+### Vercel
+
+1. En <https://vercel.com> → **Add New → Project** e importa este repositorio.
+   Vercel detecta Vite solo (build `npm run build`, salida `dist`).
+2. Si usas Firebase, añade las seis variables `VITE_FIREBASE_*` en
+   **Settings → Environment Variables** y vuelve a desplegar (se leen al compilar).
+3. Cada `git push` a `main` publica una versión nueva.
+
+`vercel.json` ya incluye la regla para que rutas como `/ventas` abran la app.
+
+### Firebase Hosting
+
+Ya está configurado en `firebase.json`:
 
 ```bash
 npm install -g firebase-tools

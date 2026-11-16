@@ -1,6 +1,7 @@
-import { getAllProducts, saveProduct } from './db';
+import { saveProducts } from './db';
+import type { Product } from './db';
 
-const SAMPLE_PRODUCTS = [
+const SAMPLE_PRODUCTS: Product[] = [
   // Frutas y Verduras
   { id_producto: '7501000101', nombre: 'Tomates (lb)', categoria: 'frutas-verduras', precio_unitario: 0.75 },
   { id_producto: '7501000102', nombre: 'Cebollas rojas (lb)', categoria: 'frutas-verduras', precio_unitario: 0.50 },
@@ -83,12 +84,8 @@ const SAMPLE_PRODUCTS = [
   { id_producto: '7512001204', nombre: 'Comida gato (1kg)', categoria: 'bebes-mascotas', precio_unitario: 3.80 },
 ];
 
-export async function seedSampleProducts() {
-  const existing = await getAllProducts();
-  if (existing.length > 0) return; // Only seed if DB is empty
-
-  for (const product of SAMPLE_PRODUCTS) {
-    await saveProduct(product);
-  }
-  console.log(`✅ Seeded ${SAMPLE_PRODUCTS.length} sample products`);
+/** Carga el catálogo de ejemplo. Solo se ejecuta cuando el usuario lo pide. */
+export async function loadSampleProducts(): Promise<number> {
+  await saveProducts(SAMPLE_PRODUCTS);
+  return SAMPLE_PRODUCTS.length;
 }

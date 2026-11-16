@@ -1,133 +1,153 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, QrCode } from 'lucide-react';
-import Scanner from '../components/Scanner';
-import { saveProduct, getProduct, deleteProduct } from '../db';
-import type { Product } from '../db';
-import { CATEGORIES } from './Products';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ScanBarcode } from 'lucide-react';
+import { saveProduct, deleteProduct } from '../db';
+import { useProducts } from '../hooks/useProducts';
+import { CATEGORIES } from '../categories';
 
+// La librería del escáner pesa bastante: se descarga solo al abrir la cámara.
+const Scanner = lazy(() => import('../components/Scanner'));
+
+const labelStyle: React.CSSProperties = {
+  fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase',
+  letterSpacing: '0.8px', display: 'block', marginBottom: '6px',
+};
+
+/** /add crea un producto; /add?id=CODIGO abre ese código (edición si ya existe). */
 export default function AddProduct() {
-  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const initialId = searchParams.get('id') ?? '';
+  // La key reinicia el formulario al cambiar de producto o al tocar la pestaña "Añadir".
+  return <AddProductForm key={initialId} initialId={initialId} />;
+}
 
-  // Form state
-  const [idProducto, setIdProducto] = useState('');
+function AddProductForm({ initialId }: { initialId: string }) {
+  const navigate = useNavigate();
+  const { products, loaded } = useProducts();
+  const cameFromLink = initialId !== '';
+
+  const [idProducto, setIdProducto] = useState(initialId);
   const [nombre, setNombre] = useState('');
   const [categoria, setCategoria] = useState('');
   const [precio, setPrecio] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [showDiscardModal, setShowDiscardModal] = useState(false);
-  const [existingProduct, setExistingProduct] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  useEffect(() => {
-    async function checkProduct() {
-      if (idProducto.trim()) {
-        const prod = await getProduct(idProducto);
-        if (prod) {
-          setNombre(prod.nombre);
-          setCategoria(prod.categoria);
-          setPrecio(prod.precio_unitario.toString());
-          setExistingProduct(true);
-        } else {
-          if (existingProduct) {
-             setNombre('');
-             setCategoria('');
-             setPrecio('');
-             setExistingProduct(false);
-          }
-        }
-      } else {
-         if (existingProduct) {
-            setNombre('');
-            setCategoria('');
-            setPrecio('');
-            setExistingProduct(false);
-         }
-      }
-    }
-    checkProduct();
-  }, [idProducto]);
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
 
-  const handleDelete = async () => {
-    if (confirm('¿Estás seguro de que deseas eliminar este producto?')) {
-      await deleteProduct(idProducto);
-      navigate('/products');
+  // Si el código escrito o escaneado ya existe, el formulario pasa a modo edición.
+  const code = idProducto.trim();
+  const existing = loaded ? products.find(p => p.id_producto === code) : undefined;
+  const existingId = existing?.id_producto ?? null;
+  const [syncedId, setSyncedId] = useState<string | null>(null);
+  if (existingId !== syncedId) {
+    setSyncedId(existingId);
+    setNombre(existing?.nombre ?? '');
+    setCategoria(existing?.categoria ?? '');
+    setPrecio(existing ? String(existing.precio_unitario) : '');
+  }
+
+  const isDirty = existing
+    ? nombre.trim() !== existing.nombre || categoria !== existing.categoria || parseFloat(precio) !== existing.precio_unitario
+    : code !== initialId || nombre.trim() !== '' || categoria !== '' || precio !== '';
+
+  const resetForm = () => {
+    setIdProducto('');
+    setNombre('');
+    setCategoria('');
+    setPrecio('');
+  };
+
+  const leave = () => {
+    if (cameFromLink) {
+      navigate(-1);
+    } else {
+      resetForm();
     }
   };
 
-  const hasFormData = () => {
-    return idProducto.trim() !== '' || nombre.trim() !== '' || categoria !== '' || precio !== '';
-  };
-
-  const handleBack = () => {
-    if (hasFormData()) {
+  const handleCancel = () => {
+    if (isDirty) {
       setShowDiscardModal(true);
     } else {
-      navigate(-1);
+      leave();
     }
   };
 
-  const confirmDiscard = () => {
-    setShowDiscardModal(false);
-    navigate(-1);
+  const showToast = (message: string) => {
+    setToast(message);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2200);
+  };
+
+  const handleDelete = async () => {
+    setShowDeleteModal(false);
+    try {
+      await deleteProduct(code);
+      if (cameFromLink) {
+        navigate(-1);
+      } else {
+        resetForm();
+        showToast('Producto eliminado');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('No se pudo eliminar el producto.');
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    const product: Product = {
-      id_producto: idProducto,
-      nombre,
-      categoria,
-      precio_unitario: parseFloat(precio)
-    };
-    await saveProduct(product);
-    navigate('/products'); // Go to products list after saving
+    const price = Math.round(parseFloat(precio) * 100) / 100;
+    if (!code || !nombre.trim() || !categoria || !(price > 0) || saving) return;
+
+    setSaving(true);
+    try {
+      await saveProduct({ id_producto: code, nombre: nombre.trim(), categoria, precio_unitario: price });
+      if (cameFromLink) {
+        navigate(-1);
+      } else if (existing) {
+        navigate(`/products?cat=${encodeURIComponent(categoria)}`);
+      } else {
+        // Producto nuevo: el formulario queda listo para registrar el siguiente.
+        resetForm();
+        showToast('Producto guardado');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('No se pudo guardar el producto. Revisa el almacenamiento del dispositivo.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
       {isScanning && (
-        <Scanner
-          onScan={(code) => { setIdProducto(code); setIsScanning(false); }}
-          onClose={() => setIsScanning(false)}
-        />
+        <Suspense fallback={null}>
+          <Scanner
+            onScan={scanned => { setIdProducto(scanned); setIsScanning(false); }}
+            onClose={() => setIsScanning(false)}
+          />
+        </Suspense>
       )}
 
-      {/* Discard Changes Modal */}
       {showDiscardModal && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.4)', zIndex: 100,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: '40px',
-        }}>
-          <div style={{
-            background: 'var(--white)', borderRadius: 'var(--radius-lg)',
-            width: '100%', maxWidth: '320px', overflow: 'hidden', textAlign: 'center',
-          }}>
-            <div style={{ padding: '20px 20px 16px' }}>
-              <div style={{ fontSize: '17px', fontWeight: 600, marginBottom: '8px' }}>¿Descartar cambios?</div>
-              <div style={{ fontSize: '13px', color: 'var(--text-light)' }}>
-                Tienes información sin guardar. ¿Estás seguro de que quieres salir?
-              </div>
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div className="modal-body">
+              <div className="modal-title">¿Descartar cambios?</div>
+              <div className="modal-text">Tienes información sin guardar. ¿Estás seguro de que quieres salir?</div>
             </div>
-            <div style={{ borderTop: '0.33px solid var(--separator)' }}>
-              <button
-                onClick={confirmDiscard}
-                style={{
-                  background: 'none', color: 'var(--danger)', fontWeight: 400,
-                  borderRadius: 0, borderBottom: '0.33px solid var(--separator)',
-                  padding: '14px',
-                }}
-              >
+            <div className="modal-actions">
+              <button type="button" className="modal-action modal-action-danger" onClick={() => { setShowDiscardModal(false); leave(); }}>
                 Descartar
               </button>
-              <button
-                onClick={() => setShowDiscardModal(false)}
-                style={{
-                  background: 'none', color: 'var(--accent)', fontWeight: 600,
-                  borderRadius: 0, padding: '14px',
-                }}
-              >
+              <button type="button" className="modal-action modal-action-primary" onClick={() => setShowDiscardModal(false)}>
                 Seguir editando
               </button>
             </div>
@@ -135,12 +155,41 @@ export default function AddProduct() {
         </div>
       )}
 
-      {/* Full page form content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '8px 20px 100px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      {showDeleteModal && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div className="modal-body">
+              <div className="modal-title">¿Eliminar producto?</div>
+              <div className="modal-text">
+                "{existing?.nombre}" se quitará del catálogo. Las ventas ya registradas no cambian.
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="modal-action modal-action-danger" onClick={handleDelete}>
+                Eliminar
+              </button>
+              <button type="button" className="modal-action modal-action-primary" onClick={() => setShowDeleteModal(false)}>
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && <div className="toast" role="status">{toast}</div>}
+
+      <div style={{ flex: 1, overflow: 'auto', padding: '8px 20px 24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
         <div>
-          <h1 style={{ fontSize: '34px', fontWeight: 700, letterSpacing: '0.37px' }}>
-            {existingProduct ? 'Editar Producto' : 'Nuevo Producto'}
-          </h1>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px' }}>
+            <h1 style={{ fontSize: '34px', fontWeight: 700, letterSpacing: '0.37px' }}>
+              {existing ? 'Editar Producto' : 'Nuevo Producto'}
+            </h1>
+            {(isDirty || cameFromLink || code !== '') && (
+              <button type="button" className="text-btn" onClick={handleCancel}>
+                Cancelar
+              </button>
+            )}
+          </div>
           <p style={{ color: 'var(--text-light)', fontSize: '15px', marginTop: '6px' }}>
             Escanea el código de barras o ingresa los datos manualmente.
           </p>
@@ -148,23 +197,28 @@ export default function AddProduct() {
 
         <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '16px', flex: 1 }}>
           <div>
-            <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.8px', display: 'block', marginBottom: '6px' }}>Código del producto</label>
+            <label htmlFor="codigo" style={labelStyle}>Código del producto</label>
             <div style={{ display: 'flex', gap: '8px' }}>
-              <input placeholder="Barras, QR o manual" value={idProducto} onChange={e => setIdProducto(e.target.value)} required />
-              <button type="button" className="secondary" style={{ width: 'auto', padding: '12px', flexShrink: 0 }} onClick={() => setIsScanning(true)}>
-                <QrCode size={28} />
+              <input id="codigo" placeholder="Barras, QR o manual" autoComplete="off" value={idProducto} onChange={e => setIdProducto(e.target.value)} required />
+              <button type="button" className="secondary" aria-label="Escanear código" style={{ width: 'auto', padding: '12px', flexShrink: 0 }} onClick={() => setIsScanning(true)}>
+                <ScanBarcode size={28} />
               </button>
             </div>
+            {existing && (
+              <p style={{ fontSize: '13px', color: 'var(--text-light)', marginTop: '6px' }}>
+                Este código ya está registrado: estás editando el producto existente.
+              </p>
+            )}
           </div>
 
           <div>
-            <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.8px', display: 'block', marginBottom: '6px' }}>Nombre</label>
-            <input placeholder="Ej. Tomates, Leche Gloria..." value={nombre} onChange={e => setNombre(e.target.value)} required />
+            <label htmlFor="nombre" style={labelStyle}>Nombre</label>
+            <input id="nombre" placeholder="Ej. Tomates, Leche entera..." autoComplete="off" maxLength={80} value={nombre} onChange={e => setNombre(e.target.value)} required />
           </div>
 
           <div>
-            <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.8px', display: 'block', marginBottom: '6px' }}>Categoría</label>
-            <select value={categoria} onChange={e => setCategoria(e.target.value)} required>
+            <label htmlFor="categoria" style={labelStyle}>Categoría</label>
+            <select id="categoria" value={categoria} onChange={e => setCategoria(e.target.value)} required>
               <option value="" disabled>Selecciona una categoría</option>
               {CATEGORIES.map(c => (
                 <option key={c.id} value={c.id}>{c.label}</option>
@@ -173,24 +227,35 @@ export default function AddProduct() {
           </div>
 
           <div>
-            <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.8px', display: 'block', marginBottom: '6px' }}>Precio unitario</label>
-            <input placeholder="$0.00" type="number" inputMode="decimal" min="0" step="0.01" value={precio} onChange={e => {
-              const val = e.target.value;
-              if (val.includes('-')) return;
-              setPrecio(val);
-            }} required style={{ fontSize: '22px', fontWeight: 600 }} />
+            <label htmlFor="precio" style={labelStyle}>Precio unitario ($)</label>
+            <input
+              id="precio"
+              placeholder="0.00"
+              type="number"
+              inputMode="decimal"
+              min="0.01"
+              step="0.01"
+              value={precio}
+              onChange={e => {
+                const val = e.target.value;
+                if (val.includes('-')) return;
+                setPrecio(val);
+              }}
+              required
+              style={{ fontSize: '22px', fontWeight: 600 }}
+            />
           </div>
 
           <div style={{ flex: 1 }}></div>
 
           <div style={{ display: 'flex', gap: '12px', marginTop: 'auto' }}>
-            {existingProduct && (
-              <button type="button" onClick={handleDelete} style={{ background: 'var(--danger)', flex: 1 }}>
+            {existing && (
+              <button type="button" className="danger" onClick={() => setShowDeleteModal(true)} style={{ flex: 1 }}>
                 Eliminar
               </button>
             )}
-            <button type="submit" style={{ flex: existingProduct ? 2 : 1 }}>
-              {existingProduct ? 'Actualizar Producto' : 'Guardar Producto'}
+            <button type="submit" disabled={saving} style={{ flex: existing ? 2 : 1 }}>
+              {existing ? 'Actualizar Producto' : 'Guardar Producto'}
             </button>
           </div>
         </form>
